@@ -413,8 +413,7 @@ def list_feeds(p, i):
     channel = i.sender
     conn = sqlite3.connect("aamnews.db")
     c = conn.cursor()
-    c.execute("SELECT * FROM feeds WHERE channels like ?",
-              ("%" + channel + "%",))
+    c.execute("SELECT * FROM feeds")
     results = c.fetchall()
     conn.close()
 
