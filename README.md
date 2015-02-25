@@ -35,6 +35,16 @@ Commands
 
 #### Global owner (in any channel or in private message)
 
+Start updating feeds
+```
+.start
+```
+
+Stop updating feeds
+```
+.stop
+```
+
 Add a channel (max_blast is the number of items to blast maximum per update, should be 0 for unlimited blasts) and join  
 ```
 .add_channel "#channel" max_blast
