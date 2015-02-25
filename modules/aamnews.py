@@ -2,13 +2,13 @@
 
 """
 aamnews.py - Feed Parsing Module
-Copyright 2013, Andrei Marcu, andreim.net
+Copyright 2013-2015, Andrei Marcu, andreim.net
 
 https://github.com/andreimarcu/aamnews
 """
 from time import time, ctime, sleep
 import localfeedparser as feedparser
-from modules.short import shorten_url
+from config import shorten_url
 import requests
 import sqlite3
 import re
@@ -16,178 +16,498 @@ import re
 
 running = False
 
-
 def init(p):
     """Performed on startup"""
     conn = sqlite3.connect("aamnews.db")
-    c = conn.cursor()
+
+    if p.config.ssl_verify == False:
+        requests.packages.urllib3.disable_warnings()
 
     # Init db
-    c.execute("CREATE TABLE IF NOT EXISTS feeds (name, url, channels)")
-    c.execute("CREATE TABLE IF NOT EXISTS items (feed_name, title, link)")
-    c.execute("CREATE TABLE IF NOT EXISTS channels"
-              + " (name, owner_host, max_blast)")
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS feeds (id integer primary key autoincrement, type_name)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_rss (id integer primary key autoincrement, feed_id, url)")
+    c.execute("CREATE TABLE IF NOT EXISTS items (id integer primary key autoincrement, feed_id, unique_id)")
+    c.execute("CREATE TABLE IF NOT EXISTS channels (id integer primary key autoincrement, name, max_blast)")
+    c.execute("CREATE TABLE IF NOT EXISTS owners (id integer primary key autoincrement, hostname)")
+    c.execute("CREATE TABLE IF NOT EXISTS channel_owners (id integer primary key autoincrement, owner_id, channel_id)")
+    c.execute("CREATE TABLE IF NOT EXISTS channel_feeds (id integer primary key autoincrement, feed_id, channel_id, name)")
+
+    # Delete existing items
+    c.execute("DELETE FROM items")
     conn.commit()
 
-    c.execute("SELECT * from channels")
+    # Join channels we currently have in the db
+    c.execute("SELECT name from channels")
     channels = [a[0] for a in c.fetchall()]
-    channels = set(channels)
+
+    conn.close()
+
     if len(channels) > 0:
         for channel in channels:
             p.write(['JOIN'], channel)
 
+
+def join_channels(p, i):
+    if i.host == p.config.owner_host:
+
+        conn = sqlite3.connect("aamnews.db")
+        c = conn.cursor()
+    
+        c.execute("SELECT name from channels")
+        channels = [a[0] for a in c.fetchall()]
+
+        conn.close()
+
+        if len(channels) > 0:
+            for channel in channels:
+                p.write(['JOIN'], channel)
+
+            return p.say("Joined " + ", ".join(channels))
+        else:
+            return p.say("No channels to join")
+
+join_channels.commands = ['join_channels']
+join_channels.threading = True
+join_channels.priority = "medium"
+
+
+def add_feed_to_channel(p, i):
+    try:
+        m = re.match(r'(\w+)\s"(.*)"\s"(.*)"\s"(.*)"', i.group(2))
+        type = m.group(1)
+
+        try:
+            channel = m.group(2)
+            name = m.group(3)
+            option_1 = m.group(4)
+
+            if type == "rss":
+                url = option_1
+                return aamnews_add_feed_rss_to_channel(p, i, channel, name, url)
+            else:
+                return p.say("Feed type not recognized.")
+
+        except:
+            if type == "rss":
+                return p.say('.add_feed_to_channel rss "<channel>" "<name>" "<url>"')
+            else:
+                raise
+    except:
+        return p.say('.add_feed_to_channel <type> "<channel>" "<name>" ("<options>", ...)')
+
+add_feed_to_channel.commands = ["add_feed_to_channel"]
+add_feed_to_channel.priority = "medium"
+add_feed_to_channel.threading = True
+
+
+
+def add_feed(p, i):
+    channel = i.sender
+    hostname = i.host
+
+    try:
+        m = re.match(r'(\w+)\s"(.*)"\s"(.*)"', i.group(2))
+        type = m.group(1)
+
+        try:
+            name = m.group(2)
+            option_1 = m.group(3)
+
+            if type == "rss":
+                url = option_1
+                return aamnews_add_feed_rss_to_channel(p, i, channel, name, url)
+            else:
+                return p.say("Feed type not recognized.")
+
+        except:
+            if type == "rss":
+               return p.say('.add_feed rss "<name>" "<url>"')
+            else:
+                raise
+    except:
+        return p.say('.add_feed <type> "<name>" ("<options>", ...)')
+
+add_feed.commands = ["add_feed"]
+add_feed.priority = "medium"
+add_feed.threading = True
+
+
+def delete_feed(p, i):
+
+    name = i.group(2)
+    channel = i.sender
+
+    if not name:
+        return p.say(".del_feed <name>")
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Get channel's id
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    channel_id = c.fetchone()[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, i.host):
+        conn.close()
+        return p.say("You must be a channel owner.")
+
+    # Check if valid feed and get feed_id
+    c.execute("SELECT feed_id FROM channel_feeds WHERE name=? AND channel_id=?", (name, channel_id))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Feed does not exist.")
+
+    feed_id = result[0]
+
+    # remove from this channel
+    c.execute("DELETE FROM channel_feeds WHERE feed_id=? AND channel_id=?", (feed_id, channel_id))
+
+    # check if orphan
+    c.execute("SELECT channel_id FROM channel_feeds WHERE feed_id=?", (feed_id,))
+    if c.fetchone() == None:
+        # Delete any of its items
+        c.execute("DELETE FROM items WHERE feed_id=?", (feed_id,))
+
+        # Get feed type
+        c.execute("SELECT type_name FROM feeds WHERE id=?", (feed_id,))
+        feed_type = c.fetchone()[0]
+
+        if feed_type == "rss":
+            # Delete from feed_rss
+            c.execute("DELETE FROM feed_rss WHERE feed_id=?", (feed_id,))
+
+        # Delete from feeds
+        c.execute("DELETE FROM feeds WHERE id=?", (feed_id,))
+
+    conn.commit()
     conn.close()
 
+    return p.say(name + " has been deleted.")
 
-def aamnews_loop(p):
-    global running
+delete_feed.commands = ["del_feed"]
+delete_feed.priority = "medium"
+delete_feed.threading = True
 
-    if running:
-        return p.msg(p.config.control_channel, "Already running.")
+
+def list_feeds(p, i):
+    channel = i.sender
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Get channel's id
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    channel_id = c.fetchone()[0]
+
+    # Get chanel's feeds
+    c.execute("SELECT name FROM channel_feeds WHERE channel_id=?", (channel_id,))
+    feeds = [e[0] for e in c.fetchall()]
+
+    conn.close()
+
+    if len(feeds) == 0:
+        return p.say("No feeds for " + channel)
     else:
-        running = True
-        p.msg(p.config.control_channel, "Starting..")
+        return p.say("Feeds: " + ", ".join(feeds))
+
+list_feeds.commands = ["list_feeds"]
+list_feeds.priority = "medium"
+list_feeds.threading = True
+
+
+def add_channel(p, i):
+
+    hostname = i.host
+
+    if hostname == p.config.owner_host:
+
+        try:
+            m = re.match(r'"(.*)"\s(\d+)', i.group(2))
+            channel = m.group(1)
+            max_blast = m.group(2)
+
+            conn = sqlite3.connect("aamnews.db")
+            c = conn.cursor()
+
+            # check if channel already exists.
+            c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+            result = c.fetchone()
+
+            if result != None:
+                return p.say("Channel already exists.")
+
+            c.execute("INSERT INTO channels (name, max_blast) VALUES (?, ?)", (channel, max_blast))
+            conn.commit()
+            conn.close()
+
+            p.write(['JOIN'], channel)
+            return p.say("Added and trying to join " + channel)
+
+        except:
+            return p.say('.add_channel "<channel_name>" <max_blast>')
+
+    else:
+        return p.say("Command is global owner only.")
+
+add_channel.commands = ["add_channel"]
+add_channel.priority = "medium"
+add_channel.threading = True
+
+
+
+def delete_channel(p, i):
+    hostname = i.host
+
+    if hostname == p.config.owner_host:
+        channel = i.group(2)
+
+        if not channel:
+            return p.say(".del_channel <channel_name>")
 
         conn = sqlite3.connect("aamnews.db")
         c = conn.cursor()
 
-        # Delete existing items
-        c.execute("DELETE FROM items")
+        # check if channel exists.
+        c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+        result = c.fetchone()
+
+        if result == None:
+            conn.close()
+            return p.say("Channel doesn't exist.")
+
+        channel_id = result[0]
+
+        # Get list of owners ids
+        c.execute("SELECT owner_id FROM channel_owners WHERE channel_id=?", (channel_id,))
+        owners = [e[0] for e in c.fetchall()]
+
+        # Delete owners from channel_owners
+        c.execute("DELETE FROM channel_owners WHERE channel_id=?", (channel_id,))
+
+        # Check if previous owners have any other channels
+        for owner_id in owners:
+            c.execute("SELECT channel_id FROM channel_owners WHERE owner_id=?", (owner_id,))
+            result = c.fetchone()
+
+            if result == None:
+                # Owner has no other channels, delete.
+                c.execute("DELETE FROM owners WHERE id=?", (owner_id,))
+
+        # Get list of feeds ids
+        c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=?", (channel_id,))
+        feeds = [e[0] for e in c.fetchall()]
+
+        # Delete from channel_feeds
+        c.execute("DELETE FROM channel_feeds WHERE channel_id=?", (channel_id,))
+
+        # Check if previous feeds have any other channels, if not delete 
+        for feed_id in feeds:
+            c.execute("SELECT channel_id FROM channel_feeds WHERE feed_id=?", (feed_id,))
+            result = c.fetchone()
+
+            if result == None:
+                # Feed has no other channels, delete
+                aamnews_delete_feed(feed_id)
+
+        # Delete from channels
+        c.execute("DELETE FROM channels WHERE name=?", (channel,))
         conn.commit()
+        conn.close()
 
-        first_run = True
-        timeouted = set()
+        p.write(['PART'], channel)
+        return p.say("Deleted and parted channel " + channel)
 
-        while True:
-            if not running:
-                return p.msg(p.config.control_channel, "Stopped.")
+delete_channel.commands = ["del_channel"]
+delete_channel.priority = "medium"
+delete_channel.threading = True
 
-            c.execute("SELECT * FROM feeds")
-            feeds = c.fetchall()
 
-            run_start = time()
+def add_owner(p, i):
+    if i.host == p.config.owner_host:
+        channel = i.sender
+        hostname = i.group(2)
 
-            for feed in feeds:
-                if not running:
-                    return p.msg(p.config.control_channel, "Stopped.")
+        conn = sqlite3.connect("aamnews.db")
+        c = conn.cursor()
 
-                feed_name, feed_url, feed_channels = feed
-                channels = feed_channels.split(",")
+        # Get channel's id
+        c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+        channel_id = c.fetchone()[0]
 
-                try:
-                    r = requests.get(feed_url, timeout=25)
-                except Exception as e:
-                    r = type('obj', (object,), {'text': ''})
-                    p.msg(p.config.control_channel, feed_name
-                          + " made a requests timeout: " + str(e))
-                    timeouted.add(feed_name)
-                    print(feed_name + " made a requests timeout: " + str(e))
-                    continue
+        # Get chanel's owners
+        c.execute("SELECT owners.hostname FROM owners INNER JOIN channel_owners ON owners.id=channel_owners.owner_id WHERE channel_id=?", (channel_id,))
+        owners = [p.config.owner_host] + [e[0] for e in c.fetchall()]
 
-                try:
-                    c.execute("SELECT link FROM items WHERE feed_name=?",
-                             (feed_name,))
-                    entries = [e[0] for e in c.fetchall()]
+        if hostname in owners:
+            conn.close()
+            return p.say("Owner already exists.")
+        else:
+            # check if owner in owners 
+            c.execute("SELECT id FROM owners where hostname=?", (hostname,))
+            result = c.fetchone()
 
-                    to_blast = []
-
-                    d = feedparser.parse(r.text)
-
-                    for entry in d.entries:
-                        try:
-                            entry.id
-                        except:
-                            entry.id = entry.link
-
-                        if not running:
-                            return p.msg(p.config.control_channel,
-                                         "Stopped.")
-
-                        if entry.id not in entries:
-                            try:
-                                c.execute("INSERT INTO items (feed_name,"
-                                          + " title,link) VALUES (?, ?, ?)",
-                                          (feed_name, entry.title, entry.id))
-                                conn.commit()
-
-                                if p.config.shorten_urls:
-                                    blast_url = shorten_url(entry.link)
-                                else:
-                                    blast_url = entry.link
-
-                                if not feed_name in timeouted and not first_run:
-                                    to_blast.append("\x02" + feed_name
-                                                    + "\x02: " + entry.title
-                                                    + " [ " + blast_url + " ]")
-
-                            except Exception as e:
-                                try:
-                                    p.msg(p.config.control_channel, "ENTRY: "
-                                          + feed_name + " for entry "
-                                          + entry.title + " " + str(e))
-                                    print("ENTRY: " + feed_name + " for entry "
-                                          + entry.title + " " + str(e))
-                                except Exception as e:
-                                    p.msg(p.config.control_channel, "ENTRY: "
-                                          + feed_name + " FAILED entry.title"
-                                          + " with url: " + entry.id
-                                          + " " + str(e))
-                                    print("ENTRY: " + feed_name + " FAILED "
-                                          + "entry.title with url: " + entry.id
-                                          + " " + str(e))
-
-                    for channel in channels:
-                        c.execute("SELECT * FROM channels WHERE name=?",
-                                  (channel,))
-
-                        max_blast = c.fetchone()[2]
-                        if max_blast:
-                            max_blast = int(max_blast)
-                            if max_blast == 0:
-                                max_blast = None
-
-                        for i, blast in enumerate(to_blast):
-                            if max_blast and i < max_blast or not max_blast:
-
-                                reached_limit = (max_blast and
-                                                 i == (max_blast - 1) and
-                                                 max_blast < len(to_blast))
-                                if reached_limit:
-                                    remaining = str(len(to_blast) - max_blast)
-                                    p.msg(channel, blast + " [ +" + remaining
-                                          + " more ]")
-                                else:
-                                    p.msg(channel, blast)
-
-                    if len(d.entries) > 0 and feed_name in timeouted:
-                        timeouted.remove(feed_name)
-                        print(feed_name + " removed from timeouted.")
-
-                    if len(to_blast) > 0:
-                        print(feed_name + " blasted " + str(len(to_blast))
-                              + " for " + str(len(channels)) + " channels")
-
-                    sleep(p.config.sleep_interval)
-
-                except Exception as e:
-                    p.msg(p.config.control_channel, "FEED: " + feed_name
-                          + ": " + str(e))
-                    print("FEED: " + feed_name + ": " + str(e))
-
-            if first_run:
-                print("\n--> Did first run in " + str(round(time() - run_start,
-                      2)) + "s at " + ctime() + "\n")
+            if result:
+                owner_id = result[0]
             else:
-                print("\n--> Did run in " + str(round(time() - run_start,
-                      2)) + "s at " + ctime() + "\n")
+                c.execute("INSERT INTO owners (hostname) VALUES (?)", (hostname,))
+                owner_id = c.lastrowid
 
-            first_run = False
+            c.execute("INSERT INTO channel_owners (owner_id, channel_id) VALUES (?, ?)", (owner_id, channel_id))
+
+            conn.commit()
+            conn.close()
+
+            return p.say("Added owner.")
+
+    else:
+        return p.say("Command is global owner only.")
+
+add_owner.commands = ["add_owner"]
+add_owner.priority = "medium"
+add_owner.threading = True
+
+
+def del_owner(p, i):
+    if i.host == p.config.owner_host:
+        channel = i.sender
+        hostname = i.group(2)
+
+        conn = sqlite3.connect("aamnews.db")
+        c = conn.cursor()
+
+        # Get channel's id
+        c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+        channel_id = c.fetchone()[0]
+
+        # Get chanel's owners
+        c.execute("SELECT owners.hostname FROM owners INNER JOIN channel_owners ON owners.id=channel_owners.owner_id WHERE channel_id=?", (channel_id,))
+        owners = [p.config.owner_host] + [e[0] for e in c.fetchall()]
+
+        if hostname in owners:
+            # Get owner_id
+            c.execute("SELECT id FROM owners where hostname=?", (hostname,))
+            owner_id = c.fetchone()[0]
+
+            c.execute("DELETE FROM channel_owners WHERE owner_id=? AND channel_id=?", (owner_id, channel_id))
+
+            # Check if owner has other channels
+            c.execute("SELECT channel_id FROM channel_owners WHERE owner_id=?", (owner_id,))
+            result = c.fetchone()
+
+            if not result:
+                c.execute("DELETE FROM owners WHERE id=?", (owner_id,))
+
+            conn.commit()
+            conn.close()
+
+            return p.say("Deleted owner.")
+
+        else:
+            conn.close()
+            return p.say("Owner doesn't exist.")
+    else:
+        return p.say("Command is global owner only.")
+
+del_owner.commands = ["del_owner"]
+del_owner.priority = "medium"
+del_owner.threading = True
+
+
+def list_owners(p, i):
+
+    channel = i.sender
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Get channel's id
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    channel_id = c.fetchone()[0]
+
+    # Get chanel's owners
+    c.execute("SELECT owners.hostname FROM owners INNER JOIN channel_owners ON owners.id=channel_owners.owner_id WHERE channel_id=?", (channel_id,))
+    owners = [p.config.owner_host] + [e[0] for e in c.fetchall()]
+
+    conn.close()
+
+    return p.say("Channel owned by: " + ", ".join(owners))
+
+list_owners.commands = ["list_owners"]
+list_owners.priority = "medium"
+list_owners.threading = True
+
+
+
+def list_channels(p, i):
+    hostname = i.host
+
+    if hostname == p.config.owner_host:
+
+        conn = sqlite3.connect("aamnews.db")
+        c = conn.cursor()
+
+        c.execute("SELECT name FROM channels")
+        channels = [e[0] for e in c.fetchall()]
+
+        conn.close()
+
+        if len(channels) == 0:
+            return p.say("No channels")
+        else:
+            return p.say("Channels: " + ", ".join(channels))
+
+list_channels.commands = ["list_channels"]
+list_channels.priority = "medium"
+list_channels.threading = True
+
+
+def max_blast(p, i):
+
+    hostname = i.host
+    channel = i.sender
+    max_blast = i.group(2)
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Get channel's id
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    channel_id = c.fetchone()[0]
+
+
+    if max_blast != None and aamnews_owns_channel(p, channel_id, hostname):
+        try:
+            max_blast = int(max_blast)
+    
+            c.execute("UPDATE channels SET max_blast=? WHERE id=?", (max_blast, channel_id))
+            conn.commit()
+            conn.close()
+
+            return p.say("Max blast for this channel is now " + str(max_blast))
+        except:
+            conn.close()
+            return p.say(".max_blast (<max_blast>)")
+
+    else:
+        c.execute("SELECT max_blast FROM channels WHERE id=?", (channel_id,))
+        max_blast = c.fetchone()[0]
+        
+        conn.close()
+
+        return p.say("Max blast for this channel is " + str(max_blast))
+
+max_blast.commands = ["max_blast"]
+max_blast.priority = "medium"
+max_blast.threading = True
 
 
 def start_aamnews(p, i):
     global running
 
-    if i.host == p.config.owner_host and i.sender == p.config.control_channel:
+    if i.host == p.config.owner_host:
         if running:
             return p.say("Already running.")
         else:
@@ -201,368 +521,214 @@ start_aamnews.priority = "medium"
 def stop_aamnews(p, i):
     global running
 
-    if i.host == p.config.owner_host and i.sender == p.config.control_channel:
+    if i.host == p.config.owner_host:
         if running:
             running = False
-            return p.msg(p.config.control_channel, "Ordered to stop.")
+            return p.say("Ordered to stop.")
         else:
-            return p.msg(p.config.control_channel, "Already stopped.")
+            return p.say("Already stopped.")
 
 stop_aamnews.commands = ['stop']
 stop_aamnews.threading = True
 stop_aamnews.priority = "medium"
 
 
-def join_channels(p, i):
-
-    if i.sender == p.config.control_channel and i.host == p.config.owner_host:
-        conn = sqlite3.connect("aamnews.db")
-        c = conn.cursor()
-        c.execute("SELECT * from channels")
-        channels = [a[0] for a in c.fetchall()]
-        channels = set(channels)
-
-        if len(channels) > 0:
-            for channel in channels:
-                p.write(['JOIN'], channel)
-            conn.close()
-            return p.msg(p.config.control_channel,
-                         "Joined " + ", ".join(channels))
-        else:
-            return p.msg(p.config.control_channel, "No channels to join")
-
-join_channels.commands = ['join_channels']
-join_channels.threading = True
-join_channels.priority = "medium"
-
-
-def add_feed(p, i):
-    try:
-        m = re.match(r'.add_feed "(.*)" "(.*)"', i.group(0))
-        feed_name = m.group(1)
-        feed_url = m.group(2)
-        feed_channel = i.sender
-    except:
-        return p.say('.add_feed "Feed Name" "http://feed.tld/rss"')
-
+def aamnews_owns_channel(p, channel_id, hostname):
     conn = sqlite3.connect("aamnews.db")
     c = conn.cursor()
-    # determine if person owns channel
-    c.execute("SELECT * FROM channels WHERE name=?", (feed_channel,))
-    result = c.fetchone()
-    if result:
-        if i.host == result[1] or i.host == p.config.owner_host:
-            # person is owner
-            c.execute("SELECT * FROM feeds WHERE url=?", (feed_url,))
-            potential_feed = c.fetchone()
-            if potential_feed:
-                # feed is in db, check if current channel is set
-                feed_name, feed_url, feed_channels = potential_feed
-                channels = feed_channels.split(",")
-                if feed_channel in channels:
-                    # feed already for channel
-                    conn.close()
-                    p.msg(p.config.control_channel, i.nick
-                          + " tried adding: " + feed_name + " in "
-                          + feed_channel + " but it was already there.")
-                    return p.say(feed_name + " is already there.")
-                else:
-                    # feed there but not associated with channel
-                    try:
-                        channels.append(feed_channel)
-                        channels = ",".join(channels)
-                        c.execute("UPDATE feeds SET channels=? WHERE url=?",
-                                 (channels, feed_url))
-                        conn.commit()
-                        conn.close()
 
-                        if i.host != p.config.owner_host:
-                            p.msg(p.config.control_channel, i.nick
-                                  + " added existing" + feed_name
-                                  + " in " + feed_channel)
-                            print(i.nick + " added existing" + feed_name
-                                  + " in " + feed_channel)
+    c.execute("SELECT hostname FROM owners INNER JOIN channel_owners ON owners.id=channel_owners.owner_id")
+    owners = [e[0] for e in c.fetchall()]
 
-                        return p.say(feed_name + " added.")
-
-                    except Exception as e:
-                        print("NEWFEED: " + feed_name + ": " + str(e))
-                        p.msg(p.config.control_channel, i.nick
-                              + " failed to add " + feed_name + " in "
-                              + feed_channel + ": " + str(e))
-                        p.say("Failed to add " + feed_name + ": " + str(e))
-
-            else:
-                # feed is not in db
-                try:
-
-                    r = requests.get(feed_url, timeout=25)
-                    d = feedparser.parse(r.text)
-
-                    if len(d.entries) == 0:
-                        conn.close()
-                        return p.say("Bad feed URL.")
-
-                    for entry in d.entries:
-                        try:
-                            c.execute("INSERT INTO items (feed_name, title,"
-                                      + " link) VALUES (?, ?, ?)",
-                                      (feed_name, entry.title, entry.id))
-                            conn.commit()
-                        except Exception as e:
-                            try:
-                                print("ENTRYLVL1: " + feed_name + " for entry "
-                                      + entry.title + " " + str(e))
-                            except Exception as e:
-                                print("ENTRYLVL1: " + feed_name
-                                      + " FAILED entry.title with url: "
-                                      + entry.id + " " + str(e))
-
-                    print("Done adding from new feed " + feed_name)
-
-                    c.execute("INSERT INTO feeds (name, url, channels) VALUES "
-                              + "(?, ?, ?)", (feed_name, feed_url,
-                                              feed_channel))
-                    conn.commit()
-                    conn.close()
-
-                    if i.host != p.config.owner_host:
-                        p.msg(p.config.control_channel, i.nick
-                              + " added new" + feed_name + " in "
-                              + feed_channel)
-                        print(i.nick + " added new" + feed_name
-                              + " in " + feed_channel)
-
-                    return p.say(feed_name + " added.")
-
-                except Exception as e:
-                    print("NEWFEED: " + feed_name + ": " + str(e))
-                    p.msg(p.config.control_channel, i.nick
-                          + " failed to add new " + feed_name + " in "
-                          + feed_channel + ": " + str(e))
-                    p.say("Failed to add new " + feed_name + ": " + str(e))
-    else:
-        conn.close()
-        # return p.say("You are not listed as owner of this channel.")
-add_feed.commands = ["add_feed"]
-add_feed.priority = "medium"
-add_feed.threading = True
-
-
-def delete_feed(p, i):
-    try:
-        m = re.match(r'.del_feed "(.*)"', i.group(0))
-        feed_name = m.group(1)
-        feed_channel = i.sender
-    except:
-        return p.say('.del_feed "Feed Name"')
-
-    conn = sqlite3.connect("aamnews.db")
-    c = conn.cursor()
-    c.execute("SELECT * FROM channels WHERE name=?", (feed_channel,))
-
-    result = c.fetchone()
-
-    if result:
-        if i.host == result[1] or i.host == p.config.owner_host:
-            # person is channel or global owner
-            c.execute("SELECT * FROM feeds WHERE name=?", (feed_name,))
-            potential_feed = c.fetchone()
-            if potential_feed:
-                # feed is in db, check if current channel is set
-                feed_name, feed_url, feed_channels = potential_feed
-                channels = feed_channels.split(",")
-                if feed_channel in channels:
-                    #DELETE HERE
-                    channels.remove(feed_channel)
-
-                    if len(channels) == 0:
-                        c.execute("DELETE FROM feeds WHERE url=?", (feed_url,))
-                    else:
-                        channels = ",".join(channels)
-                        c.execute("UPDATE feeds SET channels=? WHERE url=?",
-                                  (channels, feed_url))
-
-                    conn.commit()
-                    conn.close()
-                    p.msg(p.config.control_channel, i.nick + " deleted "
-                          + feed_name + " in " + feed_channel)
-                    return p.say(feed_name + " has been deleted.")
-                else:
-                    conn.close()
-                    return p.say(feed_name + " is not there.")
-                    p.msg(p.config.control_channel, i.nick
-                          + " tried to delete nonassociated " + feed_name
-                          + " in " + feed_channel)
-            else:
-                # feed is not in db
-                conn.close()
-                p.msg(p.config.control_channel, i.nick
-                      + " tried to delete nonexisting " + feed_name
-                      + " in " + feed_channel)
-                return p.say(feed_name + " is not there.")
-        else:
-            conn.close()
-            # return phenny.say("You are not listed as owner of this channel.")
-delete_feed.commands = ["del_feed"]
-delete_feed.priority = "medium"
-delete_feed.threading = True
-
-
-def list_feeds(p, i):
-    channel = i.sender
-    conn = sqlite3.connect("aamnews.db")
-    c = conn.cursor()
-    c.execute("SELECT * FROM feeds")
-    results = c.fetchall()
     conn.close()
 
-    feeds = []
-
-    for result in results:
-        name, url, channels = result
-        channels = channels.split(",")
-        if channel in channels:
-            feeds.append(name)
-
-    if len(feeds) == 0:
-        p.msg(p.config.control_channel, i.nick
-              + " listed (empty) feeds for " + channel)
-        return p.say("No feeds for " + channel)
-    else:
-        p.msg(p.config.control_channel, i.nick
-              + " listed feeds for " + channel)
-        return p.say("Feeds: " + ", ".join(feeds))
-
-list_feeds.commands = ["list_feeds"]
-list_feeds.priority = "medium"
-list_feeds.threading = True
+    return hostname in owners or hostname == p.config.owner_host
 
 
-def add_channel(p, i):
-    if i.host == p.config.owner_host and i.sender == p.config.control_channel:
-        try:
-            m = re.match(r'.add_channel "(.*)" "(.*)" "(.*)"', i.group(0))
-            channel_name = m.group(1)
-            channel_owner = m.group(2)
-            channel_limit = int(m.group(3))
-        except:
-            return p.say('.add_channel "#channel" "owner.hostname"'
-                         + ' "limit_blast_per_feed_in_seconds"')
+def aamnews_delete_feed(feed_id):
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
 
-        conn = sqlite3.connect("aamnews.db")
-        c = conn.cursor()
-        c.execute("SELECT * FROM channels WHERE name=?", (channel_name,))
+    c.execute("SELECT channel_id FROM channel_feeds WHERE feed_id=?", (feed_id,))
+    if c.fetchone() == None:
+        # Delete any of its items
+        c.execute("DELETE FROM items WHERE feed_id=?", (feed_id,))
 
-        result = c.fetchone()
+        # Get feed type
+        c.execute("SELECT type_name FROM feeds WHERE id=?", (feed_id,))
+        feed_type = c.fetchone()[0]
 
-        if result:
-            conn.close()
-            return p.say(channel_name + " already exists.")
-        else:
-            c.execute("INSERT INTO channels (name, owner_host, max_blast)"
-                      + " VALUES (?, ?, ?)",
-                      (channel_name, channel_owner, channel_limit))
+        if feed_type == "rss":
+            # Delete from feed_rss
+            c.execute("DELETE FROM feed_rss WHERE feed_id=?", (feed_id,))
+
+        # Delete from feeds
+        c.execute("DELETE FROM feeds WHERE id=?", (feed_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def aamnews_add_feed_rss_to_channel(p, i, channel, name, url):
+    hostname = i.host
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        r = requests.get(url, headers={"User-Agent": p.config.user_agent}, timeout=10, verify=p.config.ssl_verify)
+
+        if r.ok:
+            f = feedparser.parse(r.text)
+
+            # Check if feed already exists for another channel
+            c.execute("SELECT feed_id FROM feed_rss WHERE url=?", (url,))
+            feed_id = c.fetchone()
+
+            if feed_id == None:
+                c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("rss",))
+                feed_id = c.lastrowid
+
+                c.execute("INSERT INTO feed_rss (feed_id, url) VALUES (?,?)", (feed_id, url))
+
+                for entry in f.entries:
+                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
+
+            c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+
             conn.commit()
             conn.close()
-            p.write(['JOIN'], channel_name)
-            return p.say("Added " + channel_name)
 
-add_channel.commands = ["add_channel"]
-add_channel.priority = "medium"
-add_channel.threading = True
+            return p.say("Added " + name)
 
-
-def delete_channel(p, i):
-    if i.host == p.config.owner_host and i.sender == p.config.control_channel:
-        try:
-            m = re.match(r'.del_channel "(.*)"', i.group(0))
-            channel_name = m.group(1)
-        except:
-            return p.say('.del_channel "#channel"')
-
-        conn = sqlite3.connect("aamnews.db")
-        c = conn.cursor()
-        c.execute("SELECT * FROM channels WHERE name=?", (channel_name,))
-
-        result = c.fetchone()
-        if not result:
-            conn.close()
-            return p.say("No such channel")
         else:
+            conn.close()
+            return p.say("Could not make the request: Status " + r.status)
 
-            c.execute("SELECT * FROM feeds")
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
+def aamnews_loop(p):
+    global running
+
+    if running:
+        return p.say("Already running.")
+    else:
+        running = True
+        first_run = True
+        unsuccessful = set()
+
+        p.say("Starting...")
+
+        while True:
+
+            run_start = time()
+    
+            conn = sqlite3.connect("aamnews.db")
+            c = conn.cursor()
+
+            c.execute("SELECT feeds.id, feeds.type_name, channel_feeds.name FROM feeds INNER JOIN channel_feeds ON feeds.id=channel_feeds.feed_id")
             feeds = c.fetchall()
 
-            for feed in feeds:
-                feed_name, feed_url, feed_channels = feed
-                channels = feed_channels.split(",")
+            for feed_id, type_name, feed_name in feeds:
+                if not running:
+                    return p.say("Stopped.")
 
-                if channel_name in channels:
-                    channels.remove(channel_name)
+                # Get channels for this feed
+                c.execute("SELECT channels.name, channels.max_blast FROM channels INNER JOIN channel_feeds ON channels.id=channel_feeds.channel_id WHERE channel_feeds.feed_id=?", (feed_id,))
+                channels = c.fetchall()
 
-                    if len(channels) == 0:
-                        c.execute("DELETE FROM feeds WHERE url=?", (feed_url,))
-                    else:
-                        channels = ",".join(channels)
-                        c.execute("UPDATE feeds SET channels=? WHERE url=?",
-                                  (channels, feed_url))
+                to_blast = []
 
-                    conn.commit()
+                if type_name == "rss":
+                    # Get rss url
+                    c.execute("SELECT url FROM feed_rss WHERE feed_id=?", (feed_id,))
+                    url = c.fetchone()[0]
 
-            c.execute("DELETE FROM channels WHERE name=?", (channel_name,))
+                    try:
+                        r = requests.get(url, headers={"User-Agent": p.config.user_agent}, timeout=10, verify=p.config.ssl_verify)
 
-            conn.commit()
-            conn.close()
+                        if r.ok:
+                            f = feedparser.parse(r.text)
 
-            p.write(['PART'], channel_name)
+                            if feed_id in unsuccessful:
+                                unsuccessful.remove(feed_id)
 
-            return p.say("Deleted " + channel_name)
-
-delete_channel.commands = ["del_channel"]
-delete_channel.priority = "medium"
-delete_channel.threading = True
-
-
-def list_channels(p, i):
-
-    if i.host == p.config.owner_host and i.sender == p.config.control_channel:
-
-        conn = sqlite3.connect("aamnews.db")
-        c = conn.cursor()
-        c.execute("SELECT * FROM channels")
-        results = c.fetchall()
-        conn.close()
-
-        channels = []
-        for channel in results:
-            name, owner_host, max_blast = channel
-            channels.append("{} ({}, {})".format(name, owner_host, max_blast))
-
-        if len(channels) == 0:
-            return p.say("No channels")
-        else:
-            return p.say("Channels: " + ", ".join(channels))
-
-list_channels.commands = ["list_channels"]
-list_channels.priority = "medium"
-list_channels.threading = True
+                            # Get items we already have
+                            c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                            items = [e[0] for e in c.fetchall()]
 
 
-def insert_feeds_from_array(feeds_to_insert):
-    feeds_to_insert = []
+                            for entry in f.entries:
+                                if entry.link in items:
+                                    break
+                                else:
+                                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
+                                    blast_url = shorten_url(entry.link)
 
-    for feed in feeds_to_insert:
-        feed_name, feed_url, feed_channels = feed
+                                    if not feed_id in unsuccessful and not first_run:
+                                        to_blast.append("\x02" + feed_name
+                                                        + "\x02: " + entry.title
+                                                        + " [ " + blast_url + " ]")
+                            conn.commit()
 
-        conn = sqlite3.connect("aamnews.db")
-        c = conn.cursor()
-        c.execute("SELECT * FROM feeds WHERE name=?", (feed_name,))
-        if c.fetchone():
-            # print "Inserting " + feed[0]
-            c.execute("INSERT INTO feeds (name, url, channels) "
-                      + "VALUES (?, ?, ?)",
-                      (feed_name, feed_url, feed_channels))
-            conn.commit()
-        #else:
-            #print feed[0] + " already there."
+                        else:
+                            raise Exception("Status code" + r.status )
+
+                    except Exception as exc:
+                        print("Connection Error: " + str(exc) + " for " + url)
+                        unsuccessful.add(feed_id)
+
+
+                for channel, max_blast in channels:
+                    max_blast = int(max_blast)
+
+                    for i, blast in enumerate(to_blast):
+                        if i < max_blast:
+
+                            reached_limit = (max_blast and
+                                             i == (max_blast - 1) and
+                                             max_blast < len(to_blast))
+                            if reached_limit:
+                                remaining = str(len(to_blast) - max_blast)
+                                p.msg(channel, blast + " [ +" + remaining
+                                      + " more ]")
+                                break
+
+                        p.msg(channel, blast)
+
+                if len(to_blast) > 0:
+                    print(feed_name + " blasted " + str(len(to_blast))
+                          + " for " + str(len(channels)) + " channels")
+
+                
+                sleep(p.config.sleep_interval)
+
+            if first_run:
+                print("\n--> Did first run in " + str(round(time() - run_start,
+                      2)) + "s at " + ctime() + "\n")
+            else:
+                print("\n--> Did run in " + str(round(time() - run_start,
+                      2)) + "s at " + ctime() + "\n")
+
+            first_run = False

@@ -64,8 +64,6 @@ def startup(phenny, input):
         time.sleep(5)
 
     # Cf. http://swhack.com/logs/2005-12-05#T19-32-36
-    phenny.write(('JOIN', phenny.config.control_channel))
-
     init(phenny)
 
 startup.rule = r'(.*)'

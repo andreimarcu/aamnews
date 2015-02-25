@@ -1,10 +1,8 @@
 aamnews
 ======
-
 IRC feed parser with multiple channel/user capabilities.
 
 Based on a very stripped down version of a fork of the IRC bot phenny by [mutantmonkey](https://github.com/mutantmonkey/phenny)
-
 
 Requirements
 ------------
@@ -14,59 +12,107 @@ Requirements
 
 Installation
 ------------
-1. Edit config.py
+1. Copy config.example.py to config.py and edit.
 2. Run ./phenny -c config.py
-3. Enjoy!
+
+Design
+------
+__Feeds__ are things you want updates from (RSS feeds, etc).  
+__Channels__ have feeds.  
+__Owners__ have channels.
+
 
 Usage
 -------
-The owner of the bot should join the bot control channel, which is where the he can issue administrative commands and where the bot reports feed parsing errors, user actions, etc. 
 
-Right now, authentication for the owner is done by hostname (very easy on oftc since there are registered username cloaks), however this might not be ideal for all networks. 
+Once the bot connects to the IRC network, you can message it commands.  
+The global owner, as defined in the config, can issue all commands and does not to need to be added to every channel's owners.
 
-Commands: 
-##### As bot owner
-> .join_channels - Will join all channels 
+Right now, authentication for owners is done by hostname (very easy on oftc since there are registered username cloaks), however this might not be ideal for all networks. 
 
-List channels (in control channel)
+Commands
+--------
 
-> .list_channels
+#### Global owner (in any channel or in private message)
 
-Add a channel (in control channel, bot will join) (limit should be 0 for unlimited blasts)
+Add a channel (max_blast is the number of items to blast maximum per update, should be 0 for unlimited blasts) and join  
+```
+.add_channel "#channel" max_blast
+```
 
-> .add_channel "#channel" "owner_hostname" "limit_blast_per_feed_in_seconds"
+Delete a channel and part
+```
+.del_channel #channel
+```
 
-Delete a channel (in control channel, bot will part)
+List channels
+```
+.list_channels
+```
 
-> .del_channel "#channel"
+Join all channels (happens at startup, but if bot was kicked, it can be useful)  
+```
+.join_channels
+```
 
+Add owner to a channel (to be done in said channel)
+```
+.add_owner hostname
+```
+Delete an owner from a channel (to be done in said channel)
+```
+.del_owner hostname
+```
 
-##### As channel owner
+Add feeds to a (different) channel 
+```
+.add_feed_to_channel <type> "<channel>" "<name>" ("<options>", ...)
+```
+```
+.add_feed_to_channel rss "#channel" "Feed Name" "https://url"
+```
+
+#### Channel owner
+
+Get max_blast
+```
+.max_blast
+```
+
+Set max_blast
+```
+.max_blast <max_blast>
+```
+
 Add a feed to a channel (to do in said channel)
-
-> .add_feed "Feed Name" "http://feed.url"
+```
+.add_feed <type> "<name>" ("<options>", ...)
+```
+```
+.add_feed rss "Feed Name" "https://url"
+```
 
 Delete a feed from a channel (to do in said channel)
+```
+.del_feed Feed Name
+```
 
-> .del_feed "Feed Name"
-
-##### As anyone
+##### Anyone
 List feeds for current channel
-> .list_feeds
+```
+.list_feeds
+```
+
+List owners for the current channel (to be done in said channel)
+```
+.list_owners
+```
 
 
-#### Logging:
-- Phenny's own console output will show details for every run (time spent, feeds that had items to blast, etc) 
-- The control channel will report feed parsing errors and non-owner actions
+Logging
+-------
 
-
-To Do
------
-- A lot of refactoring
-- Use SQLAlchemy
-- Allow multiple owners for a channel
-
-
+Phenny's own console output will show details for every run (time spent, feeds that had items to blast, etc) 
 
 Author
 -------
