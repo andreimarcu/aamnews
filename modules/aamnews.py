@@ -664,7 +664,7 @@ def aamnews_loop(p):
                     continue
 
                 # Get channels for this feed
-                c.execute("SELECT channels.name, channels.max_blast FROM channels INNER JOIN channel_feeds ON channels.id=channel_feeds.channel_id WHERE channel_feeds.feed_id=?", (feed_id,))
+                c.execute("SELECT channels.name, channels.max_blast, channel_feeds.name FROM channels INNER JOIN channel_feeds ON channels.id=channel_feeds.channel_id WHERE channel_feeds.feed_id=?", (feed_id,))
                 channels = c.fetchall()
 
                 to_blast = []
@@ -694,9 +694,7 @@ def aamnews_loop(p):
                                     if not feed_id in unsuccessful and not first_run:
                                         blast_url = shorten_url(entry.link)
 
-                                        to_blast.append("\x02" + feed_name
-                                                        + "\x02: " + entry.title
-                                                        + " [ " + blast_url + " ]")
+                                        to_blast.append("{} [{}]".format(entry.title, blast_url))
                             conn.commit()
 
                         else:
@@ -707,10 +705,13 @@ def aamnews_loop(p):
                         unsuccessful.add(feed_id)
 
 
-                for channel, max_blast in channels:
+                for channel, max_blast, channel_feed_name in channels:
                     max_blast = int(max_blast)
 
                     for i, blast in enumerate(to_blast):
+
+                        msg = "\x02{}\x02: {}".format(channel_feed_name, blast)
+
                         if i < max_blast:
 
                             reached_limit = (max_blast and
@@ -718,11 +719,10 @@ def aamnews_loop(p):
                                              max_blast < len(to_blast))
                             if reached_limit:
                                 remaining = str(len(to_blast) - max_blast)
-                                p.msg(channel, blast + " [ +" + remaining
-                                      + " more ]")
+                                p.msg(channel, "{} [ +{} more ]".format(msg, str(remaining)))
                                 break
 
-                        p.msg(channel, blast)
+                        p.msg(channel, msg)
 
                 if len(to_blast) > 0:
                     print(feed_name + " blasted " + str(len(to_blast))
