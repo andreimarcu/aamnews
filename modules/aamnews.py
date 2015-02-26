@@ -694,7 +694,7 @@ def aamnews_loop(p):
                                     if not feed_id in unsuccessful and not first_run:
                                         blast_url = shorten_url(entry.link)
 
-                                        to_blast.append("{} [{}]".format(entry.title, blast_url))
+                                        to_blast.append("{} [ {} ]".format(entry.title, blast_url))
                             conn.commit()
 
                         else:
