@@ -601,9 +601,9 @@ def aamnews_add_feed_rss_to_channel(p, i, channel, name, url):
 
             # Check if feed already exists for another channel
             c.execute("SELECT feed_id FROM feed_rss WHERE url=?", (url,))
-            feed_id = c.fetchone()
+            result = c.fetchone()
 
-            if feed_id == None:
+            if result == None:
                 c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("rss",))
                 feed_id = c.lastrowid
 
@@ -611,6 +611,9 @@ def aamnews_add_feed_rss_to_channel(p, i, channel, name, url):
 
                 for entry in f.entries:
                     c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
+
+            else:
+                feed_id = result[0]
 
             c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
 
@@ -643,7 +646,7 @@ def aamnews_loop(p):
         while True:
 
             run_start = time()
-    
+
             conn = sqlite3.connect("aamnews.db")
             c = conn.cursor()
 
@@ -653,6 +656,12 @@ def aamnews_loop(p):
             for feed_id, type_name, feed_name in feeds:
                 if not running:
                     return p.say("Stopped.")
+
+
+                # Check that I haven't been deleted in the meantime
+                c.execute("SELECT id FROM feeds WHERE id=?", (feed_id,))
+                if c.fetchone() == None:
+                    continue
 
                 # Get channels for this feed
                 c.execute("SELECT channels.name, channels.max_blast FROM channels INNER JOIN channel_feeds ON channels.id=channel_feeds.channel_id WHERE channel_feeds.feed_id=?", (feed_id,))
@@ -678,15 +687,13 @@ def aamnews_loop(p):
                             c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
                             items = [e[0] for e in c.fetchall()]
 
-
                             for entry in f.entries:
-                                if entry.link in items:
-                                    break
-                                else:
+                                if not entry.link in items:
                                     c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
-                                    blast_url = shorten_url(entry.link)
 
                                     if not feed_id in unsuccessful and not first_run:
+                                        blast_url = shorten_url(entry.link)
+
                                         to_blast.append("\x02" + feed_name
                                                         + "\x02: " + entry.title
                                                         + " [ " + blast_url + " ]")
