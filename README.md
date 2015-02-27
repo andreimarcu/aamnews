@@ -8,6 +8,7 @@ Requirements
 ------------
 * Python 3.2+
 * [python-requests](http://docs.python-requests.org/en/latest/)
+* [tweepy](https://github.com/tweepy/tweepy)
 * [praw](https://praw.readthedocs.org/en/v2.1.20/)
 * ~~[feedparser](https://code.google.com/p/feedparser/)~~ - however right now it's manually overridden since some issues with python3 are not yet fixed in upstream.
 
