@@ -11,6 +11,7 @@ import localfeedparser as feedparser
 from config import shorten_url
 import requests
 import sqlite3
+import tweepy
 import praw
 import re
 
@@ -31,6 +32,8 @@ def init(p):
     c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_subreddit (id integer primary key autoincrement, feed_id, name, sort)")
     c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_comments (id integer primary key autoincrement, feed_id, article_id)")
     c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_search (id integer primary key autoincrement, feed_id, subreddit_name, query)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_twitter_user (id integer primary key autoincrement, feed_id, username, replies)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_twitter_search (id integer primary key autoincrement, feed_id, query)")
     c.execute("CREATE TABLE IF NOT EXISTS items (id integer primary key autoincrement, feed_id, unique_id)")
     c.execute("CREATE TABLE IF NOT EXISTS channels (id integer primary key autoincrement, name, max_blast)")
     c.execute("CREATE TABLE IF NOT EXISTS owners (id integer primary key autoincrement, hostname)")
@@ -109,6 +112,17 @@ def add_feed_to_channel(p, i):
 
                 return aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query)
 
+            elif type == "twitter_user":
+                user = option_1
+                replies = 1 if option_2 == "yes" else 0
+
+                return aamnews_add_feed_twitter_user(p, i, channel, name, user, replies)
+
+            elif type == "twitter_search":
+                query = option_1
+
+                return aamnews_add_feed_twitter_search(p, i, channel, name, query)
+
             else:
                 return p.say("Feed type not recognized.")
 
@@ -121,6 +135,10 @@ def add_feed_to_channel(p, i):
                 return p.say('.add_feed_to_channel reddit_comments "<channel>" "<name>" "<url>"')
             elif type == "reddit_search":
                 return p.say('.add_feed_to_channel reddit_search "<channel>" "<name>" "<subreddit>" "<query>"')
+            elif type == "twitter_user":
+                return p.say('.add_feed_to_channel twitter_user "<channel>" "<name>" "<twitter_user>" "<replies (yes|no)>"')
+            elif type == "twitter_search":
+                return p.say('.add_feed_to_channel twitter_search "<channel>" "<name>" "<query>"')
             else:
                 raise
     except:
@@ -165,6 +183,17 @@ def add_feed(p, i):
 
                 return aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query)
 
+            elif type == "twitter_user":
+                user = option_1
+                replies = 1 if option_2 == "yes" else 0
+
+                return aamnews_add_feed_twitter_user(p, i, channel, name, user, replies)
+
+            elif type == "twitter_search":
+                query = option_1
+
+                return aamnews_add_feed_twitter_search(p, i, channel, name, query)
+
             else:
                 return p.say("Feed type not recognized.")
 
@@ -172,11 +201,15 @@ def add_feed(p, i):
             if type == "rss":
                return p.say('.add_feed rss "<name>" "<url>"')
             elif type == "reddit_subreddit":
-                return p.say('.add_feed_to_channel reddit_subreddit "<name>" "<subreddit>" "<sort>"')
+                return p.say('.add_feed reddit_subreddit "<name>" "<subreddit>" "<sort>"')
             elif type == "reddit_comments":
-                return p.say('.add_feed_to_channel reddit_comments "<name>" "<url>"')
+                return p.say('.add_feed reddit_comments "<name>" "<url>"')
             elif type == "reddit_search":
-                return p.say('.add_feed_to_channel reddit_search "<name>" "<subreddit>" "<query>"')
+                return p.say('.add_feed reddit_search "<name>" "<subreddit>" "<query>"')
+            elif type == "twitter_user":
+                return p.say('.add_feed twitter_user "<name>" "<twitter_user>" "<replies (yes|no)>"')
+            elif type == "twitter_search":
+                return p.say('.add_feed twitter_search "<name>" "<query>"')
             else:
                 raise
     except:
@@ -241,6 +274,12 @@ def delete_feed(p, i):
 
         elif feed_type == "reddit_search":
             c.execute("DELETE FROM feed_reddit_search WHERE feed_id=?", (feed_id,))
+        
+        elif feed_type == "twitter_user":
+            c.execute("DELETE FROM feed_twitter_user WHERE feed_id=?", (feed_id,))
+        
+        elif feed_type == "twitter_search":
+            c.execute("DELETE FROM feed_twitter_search WHERE feed_id=?", (feed_id,))
 
         # Delete from feeds
         c.execute("DELETE FROM feeds WHERE id=?", (feed_id,))
@@ -302,7 +341,7 @@ def add_channel(p, i):
             if result != None:
                 return p.say("Channel already exists.")
 
-            c.execute("INSERT INTO channels (name, max_blast) VALUES (?, ?)", (channel, max_blast))
+            c.execute("INSERT INTO channels (name, max_blast) VALUES (?,?)", (channel, max_blast))
             conn.commit()
             conn.close()
 
@@ -418,7 +457,7 @@ def add_owner(p, i):
                 c.execute("INSERT INTO owners (hostname) VALUES (?)", (hostname,))
                 owner_id = c.lastrowid
 
-            c.execute("INSERT INTO channel_owners (owner_id, channel_id) VALUES (?, ?)", (owner_id, channel_id))
+            c.execute("INSERT INTO channel_owners (owner_id, channel_id) VALUES (?,?)", (owner_id, channel_id))
 
             conn.commit()
             conn.close()
@@ -681,12 +720,12 @@ def aamnews_add_feed_reddit_subreddit(p, i, channel, name, subreddit, sort):
             c.execute("INSERT INTO feed_reddit_subreddit (feed_id, name, sort) VALUES (?,?,?)", (feed_id, subreddit, sort))
 
             for item in items:
-                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, item.id))
 
         else:
             feed_id = result[0]
 
-        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
 
         conn.commit()
         conn.close()
@@ -741,12 +780,12 @@ def aamnews_add_feed_reddit_comments(p, i, channel, name, url):
             items = [e for e in praw.helpers.flatten_tree(sub.comments)]
 
             for item in items:
-                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, item.id))
 
         else:
             feed_id = result[0]
 
-        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
 
         conn.commit()
         conn.close()
@@ -799,13 +838,138 @@ def aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query):
             items = [e for e in r.search(query=query, subreddit=subreddit)]
 
             for item in items:
-                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, item.id))
 
 
         else:
             feed_id = result[0]
 
-        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
+
+        conn.commit()
+        conn.close()
+
+        return p.say("Added " + name)
+
+
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
+def aamnews_add_feed_twitter_user(p, i, channel, name, user, replies):
+    hostname = i.host
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        # Check if feed already exists for another channel
+        c.execute("SELECT feed_id FROM feed_twitter_user WHERE username=? AND replies=?", (user, replies))
+        result = c.fetchone()
+
+        if result == None:
+
+            c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("twitter_user",))
+            feed_id = c.lastrowid
+
+            c.execute("INSERT INTO feed_twitter_user (feed_id, username, replies) VALUES (?,?,?)", (feed_id, user, replies))
+
+            auth = tweepy.OAuthHandler(p.config.twitter_creds["consumer_key"], p.config.twitter_creds["consumer_secret"])
+            auth.set_access_token(p.config.twitter_creds["access_token"], p.config.twitter_creds["access_token_secret"])
+            t = tweepy.API(auth)
+
+            if replies:
+                items = [e for e in t.user_timeline(user, count=100)]
+            else:
+                items = [e for e in t.user_timeline(user, count=100) if e.in_reply_to_user_id == None]
+
+            for item in items:
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, item.id))
+
+        else:
+            feed_id = result[0]
+
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
+
+        conn.commit()
+        conn.close()
+
+        return p.say("Added " + name)
+
+
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
+def aamnews_add_feed_twitter_search(p, i, channel, name, query):
+    hostname = i.host
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        # Check if feed already exists for another channel
+        c.execute("SELECT feed_id FROM feed_twitter_search WHERE query=?", (query,))
+        result = c.fetchone()
+
+        if result == None:
+
+            c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("twitter_search",))
+            feed_id = c.lastrowid
+
+            c.execute("INSERT INTO feed_twitter_search (feed_id, query) VALUES (?,?)", (feed_id, query))
+
+            auth = tweepy.OAuthHandler(p.config.twitter_creds["consumer_key"], p.config.twitter_creds["consumer_secret"])
+            auth.set_access_token(p.config.twitter_creds["access_token"], p.config.twitter_creds["access_token_secret"])
+            t = tweepy.API(auth)
+
+            items = [e for e in t.search(query, rpp=100)]
+
+            for item in items:
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, item.id))
+
+        else:
+            feed_id = result[0]
+
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
 
         conn.commit()
         conn.close()
@@ -859,12 +1023,12 @@ def aamnews_add_feed_rss_to_channel(p, i, channel, name, url):
                 c.execute("INSERT INTO feed_rss (feed_id, url) VALUES (?,?)", (feed_id, url))
 
                 for entry in f.entries:
-                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
+                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.link))
 
             else:
                 feed_id = result[0]
 
-            c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+            c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?,?,?)", (feed_id, channel_id, name))
 
             conn.commit()
             conn.close()
@@ -938,7 +1102,7 @@ def aamnews_loop(p):
 
                             for entry in f.entries:
                                 if not entry.link in items:
-                                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.link))
+                                    c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.link))
 
                                     if not feed_id in unsuccessful and not first_run:
                                         blast_url = shorten_url(entry.link)
@@ -979,7 +1143,7 @@ def aamnews_loop(p):
 
                         for entry in entries:
                             if not entry.id in items:
-                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.id))
 
                                 if not feed_id in unsuccessful and not first_run:
                                     blast_url = shorten_url(entry.url)
@@ -1015,7 +1179,7 @@ def aamnews_loop(p):
 
                         for entry in entries:
                             if not entry.id in items:
-                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.id))
 
                                 if not feed_id in unsuccessful and not first_run:
                                     blast_url = shorten_url(entry.permalink)
@@ -1046,7 +1210,7 @@ def aamnews_loop(p):
 
                         for entry in entries:
                             if not entry.id in items:
-                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.id))
 
                                 if not feed_id in unsuccessful and not first_run:
                                     blast_url = shorten_url(entry.url)
@@ -1063,6 +1227,79 @@ def aamnews_loop(p):
 
                     except Exception as exc:
                         print("Reddit error: {} for {}".format(str(exc), feed_name))
+                        unsuccessful.add(feed_id)
+
+
+                elif type_name == "twitter_user":
+                    c.execute("SELECT username, replies FROM feed_twitter_user WHERE feed_id=?", (feed_id,))
+                    user, replies = c.fetchone()
+
+                    try:
+
+                        auth = tweepy.OAuthHandler(p.config.twitter_creds["consumer_key"], p.config.twitter_creds["consumer_secret"])
+                        auth.set_access_token(p.config.twitter_creds["access_token"], p.config.twitter_creds["access_token_secret"])
+                        t = tweepy.API(auth)
+
+                        if replies:
+                            entries = [e for e in t.user_timeline(user, count=100)]
+                        else:
+                            entries = [e for e in t.user_timeline(user, count=100) if e.in_reply_to_user_id == None]
+
+                        # Get items we already have
+                        c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                        items = [e[0] for e in c.fetchall()]
+
+                        for entry in entries:
+                            if not entry.id in items:
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.id))
+
+                                if not feed_id in unsuccessful and not first_run:
+                                    blast_url = shorten_url("https://twitter.com/{}/status/{}".format(entry.author.screen_name, entry.id_str))
+
+                                    to_blast.append("{} [ {} ]".format(entry.text[:250], blast_url))
+
+                        conn.commit()
+
+                        if feed_id in unsuccessful:
+                            unsuccessful.remove(feed_id)
+
+                    except Exception as exc:
+                        print("Twitter error: {} for {}".format(str(exc), feed_name))
+                        unsuccessful.add(feed_id)
+
+
+                elif type_name == "twitter_search":
+                    c.execute("SELECT query FROM feed_twitter_search WHERE feed_id=?", (feed_id,))
+                    query = c.fetchone()[0]
+
+                    try:
+
+                        auth = tweepy.OAuthHandler(p.config.twitter_creds["consumer_key"], p.config.twitter_creds["consumer_secret"])
+                        auth.set_access_token(p.config.twitter_creds["access_token"], p.config.twitter_creds["access_token_secret"])
+                        t = tweepy.API(auth)
+
+                        entries = [e for e in t.search(query, rpp=100)]
+
+                        # Get items we already have
+                        c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                        items = [e[0] for e in c.fetchall()]
+
+                        for entry in entries:
+                            if not entry.id in items:
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?,?)", (feed_id, entry.id))
+
+                                if not feed_id in unsuccessful and not first_run:
+                                    blast_url = shorten_url("https://twitter.com/{}/status/{}".format(entry.author.screen_name, entry.id_str))
+
+                                    to_blast.append("{} [ {} ]".format(entry.text[:250], blast_url))
+
+                        conn.commit()
+
+                        if feed_id in unsuccessful:
+                            unsuccessful.remove(feed_id)
+
+                    except Exception as exc:
+                        print("Twitter error: {} for {}".format(str(exc), feed_name))
                         unsuccessful.add(feed_id)
 
 

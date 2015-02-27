@@ -94,6 +94,12 @@ Add feeds to a (different) channel
 ```
 .add_feed_to_channel reddit_search "#channel" "Feed Name" "subreddit_name" "search query"  
 ```
+```
+.add_feed_to_channel twitter_user "#channel" "Feed Name" "twitter_screenname" "replies (yes|no)"  
+```
+```
+.add_feed_to_channel twitter_search "#channel" "Feed Name" "search terms"  
+```
 
 #### Channel owner
 
@@ -122,6 +128,12 @@ Add a feed to a channel (to do in said channel)
 ```
 ```
 .add_feed reddit_search "Feed Name" "subreddit_name" "search query"  
+```
+```
+.add_feed twitter_user "Feed Name" "twitter_screenname" "replies (yes|no)"  
+```
+```
+.add_feed twitter_search "Feed Name" "search terms"    
 ```
 
 Delete a feed from a channel (to do in said channel)  

@@ -26,8 +26,16 @@ ssl_verify = False
 # User Agent (You are responsible for respectul usage)
 user_agent = "aamnews"
 
-### Ignore nicknames
+# Ignore nicknames
 ignore = ['']
+
+# Twitter api credentials (required for twitter feed types)
+twitter_creds = {
+	"consumer_key": "",
+	"consumer_secret": "",
+	"access_token": "",
+	"access_token_secret": ""
+	}
 
 # URL shortening
 # Use any of the two and modify to use your shortner
