@@ -8,12 +8,16 @@ Requirements
 ------------
 * Python 3.2+
 * [python-requests](http://docs.python-requests.org/en/latest/)
-* [feedparser](https://code.google.com/p/feedparser/) - however right now it's manually overridden since some issues with python3 are not yet fixed in upstream.
+* [praw](https://praw.readthedocs.org/en/v2.1.20/)
+* ~~[feedparser](https://code.google.com/p/feedparser/)~~ - however right now it's manually overridden since some issues with python3 are not yet fixed in upstream.
 
 Installation
 ------------
-1. Copy config.example.py to config.py and edit.
-2. Run ./phenny -c config.py
+
+1. ```git clone https://github.com/andreimarcu/aamnews.git```
+2. ```pip3 install -r requirements.txt```
+3. Copy config.example.py to config.py and edit.
+4. ```python3 phenny -c config.py```
 
 Design
 ------
@@ -74,12 +78,21 @@ Delete an owner from a channel (to be done in said channel)
 .del_owner hostname
 ```
 
-Add feeds to a (different) channel 
+Add feeds to a (different) channel  
 ```
-.add_feed_to_channel <type> "<channel>" "<name>" ("<options>", ...)
+.add_feed_to_channel <type> "<channel>" "<name>" ("<options>", ...)  
 ```
 ```
-.add_feed_to_channel rss "#channel" "Feed Name" "https://url"
+.add_feed_to_channel rss "#channel" "Feed Name" "https://url"  
+```
+```
+.add_feed_to_channel reddit_subreddit "#channel" "Feed Name" "subreddit_name" "new|top|hot"  
+```
+```
+.add_feed_to_channel reddit_comments "#channel" "Feed Name" "https://url"  
+```
+```
+.add_feed_to_channel reddit_search "#channel" "Feed Name" "subreddit_name" "search query"  
 ```
 
 #### Channel owner
@@ -94,15 +107,24 @@ Set max_blast
 .max_blast <max_blast>
 ```
 
-Add a feed to a channel (to do in said channel)
+Add a feed to a channel (to do in said channel)  
 ```
-.add_feed <type> "<name>" ("<options>", ...)
+.add_feed <type> "<name>" ("<options>", ...)  
 ```
 ```
-.add_feed rss "Feed Name" "https://url"
+.add_feed rss "Feed Name" "https://url"  
+```
+```
+.add_feed reddit_subreddit "Feed Name" "subreddit_name" "new|top|hot"  
+```
+```
+.add_feed reddit_comments "Feed Name" "https://url"  
+```
+```
+.add_feed reddit_search "Feed Name" "subreddit_name" "search query"  
 ```
 
-Delete a feed from a channel (to do in said channel)
+Delete a feed from a channel (to do in said channel)  
 ```
 .del_feed Feed Name
 ```

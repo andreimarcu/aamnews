@@ -11,6 +11,7 @@ import localfeedparser as feedparser
 from config import shorten_url
 import requests
 import sqlite3
+import praw
 import re
 
 
@@ -27,6 +28,9 @@ def init(p):
     c = conn.cursor()
     c.execute("CREATE TABLE IF NOT EXISTS feeds (id integer primary key autoincrement, type_name)")
     c.execute("CREATE TABLE IF NOT EXISTS feed_rss (id integer primary key autoincrement, feed_id, url)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_subreddit (id integer primary key autoincrement, feed_id, name, sort)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_comments (id integer primary key autoincrement, feed_id, article_id)")
+    c.execute("CREATE TABLE IF NOT EXISTS feed_reddit_search (id integer primary key autoincrement, feed_id, subreddit_name, query)")
     c.execute("CREATE TABLE IF NOT EXISTS items (id integer primary key autoincrement, feed_id, unique_id)")
     c.execute("CREATE TABLE IF NOT EXISTS channels (id integer primary key autoincrement, name, max_blast)")
     c.execute("CREATE TABLE IF NOT EXISTS owners (id integer primary key autoincrement, hostname)")
@@ -74,23 +78,49 @@ join_channels.priority = "medium"
 
 def add_feed_to_channel(p, i):
     try:
-        m = re.match(r'(\w+)\s"(.*)"\s"(.*)"\s"(.*)"', i.group(2))
+        m = re.match(r'(\w+)\s"([^"]+)"\s"([^"]+)"\s"([^"]+)"(?:\s"([^"]+)")?', i.group(2))
         type = m.group(1)
 
         try:
             channel = m.group(2)
             name = m.group(3)
             option_1 = m.group(4)
+            option_2 = m.group(5)
 
             if type == "rss":
                 url = option_1
+
                 return aamnews_add_feed_rss_to_channel(p, i, channel, name, url)
+
+            elif type == "reddit_subreddit":
+                subreddit = option_1
+                sort = option_2
+
+                return aamnews_add_feed_reddit_subreddit(p, i, channel, name, subreddit, sort)
+
+            elif type == "reddit_comments":
+                url = option_1
+
+                return aamnews_add_feed_reddit_comments(p, i, channel, name, url)
+
+            elif type =="reddit_search":
+                subreddit = option_1
+                query = option_2
+
+                return aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query)
+
             else:
                 return p.say("Feed type not recognized.")
 
         except:
             if type == "rss":
                 return p.say('.add_feed_to_channel rss "<channel>" "<name>" "<url>"')
+            elif type == "reddit_subreddit":
+                return p.say('.add_feed_to_channel reddit_subreddit "<channel>" "<name>" "<subreddit>" "<sort>"')
+            elif type == "reddit_comments":
+                return p.say('.add_feed_to_channel reddit_comments "<channel>" "<name>" "<url>"')
+            elif type == "reddit_search":
+                return p.say('.add_feed_to_channel reddit_search "<channel>" "<name>" "<subreddit>" "<query>"')
             else:
                 raise
     except:
@@ -101,28 +131,52 @@ add_feed_to_channel.priority = "medium"
 add_feed_to_channel.threading = True
 
 
-
 def add_feed(p, i):
     channel = i.sender
     hostname = i.host
 
     try:
-        m = re.match(r'(\w+)\s"(.*)"\s"(.*)"', i.group(2))
+        m = re.match(r'(\w+)\s"([^"]+)"\s"([^"]+)"(?:\s"([^"]+)")?', i.group(2))
         type = m.group(1)
 
         try:
             name = m.group(2)
             option_1 = m.group(3)
+            option_2 = m.group(4)
 
             if type == "rss":
                 url = option_1
                 return aamnews_add_feed_rss_to_channel(p, i, channel, name, url)
+
+            elif type == "reddit_subreddit":
+                subreddit = option_1
+                sort = option_2
+
+                return aamnews_add_feed_reddit_subreddit(p, i, channel, name, subreddit, sort)
+
+            elif type == "reddit_comments":
+                url = option_1
+
+                return aamnews_add_feed_reddit_comments(p, i, channel, name, url)
+
+            elif type =="reddit_search":
+                subreddit = option_1
+                query = option_2
+
+                return aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query)
+
             else:
                 return p.say("Feed type not recognized.")
 
         except:
             if type == "rss":
                return p.say('.add_feed rss "<name>" "<url>"')
+            elif type == "reddit_subreddit":
+                return p.say('.add_feed_to_channel reddit_subreddit "<name>" "<subreddit>" "<sort>"')
+            elif type == "reddit_comments":
+                return p.say('.add_feed_to_channel reddit_comments "<name>" "<url>"')
+            elif type == "reddit_search":
+                return p.say('.add_feed_to_channel reddit_search "<name>" "<subreddit>" "<query>"')
             else:
                 raise
     except:
@@ -178,6 +232,15 @@ def delete_feed(p, i):
         if feed_type == "rss":
             # Delete from feed_rss
             c.execute("DELETE FROM feed_rss WHERE feed_id=?", (feed_id,))
+
+        elif feed_type == "reddit_subreddit":
+            c.execute("DELETE FROM feed_reddit_subreddit WHERE feed_id=?", (feed_id,))
+
+        elif feed_type == "reddit_comments":
+            c.execute("DELETE FROM feed_reddit_comments WHERE feed_id=?", (feed_id,))
+
+        elif feed_type == "reddit_search":
+            c.execute("DELETE FROM feed_reddit_search WHERE feed_id=?", (feed_id,))
 
         # Delete from feeds
         c.execute("DELETE FROM feeds WHERE id=?", (feed_id,))
@@ -440,7 +503,6 @@ list_owners.priority = "medium"
 list_owners.threading = True
 
 
-
 def list_channels(p, i):
     hostname = i.host
 
@@ -569,6 +631,193 @@ def aamnews_delete_feed(feed_id):
     conn.close()
 
 
+def aamnews_add_feed_reddit_subreddit(p, i, channel, name, subreddit, sort):
+    hostname = i.host
+
+    if not sort in ["hot", "new", "top"]:
+        return p.say("Sort must be hot, new or top.")
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        # Check if feed already exists for another channel
+        c.execute("SELECT feed_id FROM feed_reddit_subreddit WHERE name=? AND sort=?", (subreddit, sort))
+        result = c.fetchone()
+
+        if result == None:
+
+            r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+            sub = r.get_subreddit(subreddit)
+
+            if sort == "hot":
+                items = [e for e in sub.get_hot(limit=100)]
+            elif sort == "top":
+                items = [e for e in sub.get_top(limit=100)]
+            elif sort == "new":
+                items = [e for e in sub.get_new(limit=100)]
+
+            c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("reddit_subreddit",))
+            feed_id = c.lastrowid
+
+            c.execute("INSERT INTO feed_reddit_subreddit (feed_id, name, sort) VALUES (?,?,?)", (feed_id, subreddit, sort))
+
+            for item in items:
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+
+        else:
+            feed_id = result[0]
+
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+
+        conn.commit()
+        conn.close()
+
+        return p.say("Added " + name)
+
+
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
+def aamnews_add_feed_reddit_comments(p, i, channel, name, url):
+    hostname = i.host
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+        sub = r.get_submission(url)
+
+        # Check if feed already exists for another channel
+        c.execute("SELECT feed_id FROM feed_reddit_comments WHERE article_id=? ", (sub.id,))
+        result = c.fetchone()
+
+        if result == None:
+
+            c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("reddit_comments",))
+            feed_id = c.lastrowid
+
+            c.execute("INSERT INTO feed_reddit_comments (feed_id, article_id) VALUES (?,?)", (feed_id, sub.id))
+
+            items = [e for e in praw.helpers.flatten_tree(sub.comments)]
+
+            for item in items:
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+
+        else:
+            feed_id = result[0]
+
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+
+        conn.commit()
+        conn.close()
+
+        return p.say("Added " + name)
+
+
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
+def aamnews_add_feed_reddit_search(p, i, channel, name, subreddit, query):
+    hostname = i.host
+
+    conn = sqlite3.connect("aamnews.db")
+    c = conn.cursor()
+
+    # Check if channel exists
+    c.execute("SELECT id FROM channels WHERE name=?", (channel,))
+    result = c.fetchone()
+
+    if result == None:
+        return p.say("Channel does not exist.")
+
+    channel_id = result[0]
+
+    # determine if person owns channel
+    if not aamnews_owns_channel(p, channel_id, hostname):
+        return p.say("You must be a channel owner.")
+
+    # check if name is already in use for another feed in this channel
+    c.execute("SELECT feed_id FROM channel_feeds WHERE channel_id=? AND name=?", (channel_id, name))
+    if c.fetchone() != None:
+        return p.say("Name is already in use for another feed in this channel.")
+
+    try:
+        # Check if feed already exists for another channel
+        c.execute("SELECT feed_id FROM feed_reddit_search WHERE subreddit_name=? AND query=?", (subreddit, query))
+        result = c.fetchone()
+
+        if result == None:
+
+            c.execute("INSERT INTO feeds (type_name) VALUES (?)", ("reddit_search",))
+            feed_id = c.lastrowid
+
+            c.execute("INSERT INTO feed_reddit_search (feed_id, subreddit_name, query) VALUES (?,?,?)", (feed_id, subreddit, query))
+
+            r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+            items = [e for e in r.search(query=query, subreddit=subreddit)]
+
+            for item in items:
+                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, item.id))
+
+
+        else:
+            feed_id = result[0]
+
+        c.execute("INSERT INTO channel_feeds (feed_id, channel_id, name) VALUES (?, ?, ?)", (feed_id, channel_id, name))
+
+        conn.commit()
+        conn.close()
+
+        return p.say("Added " + name)
+
+
+    except Exception as exc:
+        conn.close()
+        return p.say("Connection Error: " + str(exc))
+
+
 def aamnews_add_feed_rss_to_channel(p, i, channel, name, url):
     hostname = i.host
 
@@ -645,6 +894,9 @@ def aamnews_loop(p):
 
         while True:
 
+            if not running:
+                return p.say("Stopped.")
+
             run_start = time()
 
             conn = sqlite3.connect("aamnews.db")
@@ -690,8 +942,8 @@ def aamnews_loop(p):
 
                                     if not feed_id in unsuccessful and not first_run:
                                         blast_url = shorten_url(entry.link)
+                                        to_blast.append("{} [ {} ]".format(entry.title[:250], blast_url))
 
-                                        to_blast.append("{} [ {} ]".format(entry.title, blast_url))
                             conn.commit()
 
                             if feed_id in unsuccessful:
@@ -702,6 +954,115 @@ def aamnews_loop(p):
 
                     except Exception as exc:
                         print("Connection Error: " + str(exc) + " for " + url)
+                        unsuccessful.add(feed_id)
+
+
+                elif type_name == "reddit_subreddit":
+                    c.execute("SELECT name, sort FROM feed_reddit_subreddit WHERE feed_id=?", (feed_id,))
+                    subreddit, sort = c.fetchone()
+
+                    try:
+
+                        r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+                        sub = r.get_subreddit(subreddit)
+
+                        if sort == "hot":
+                            entries = [e for e in sub.get_hot(limit=100)]
+                        elif sort == "top":
+                            entries = [e for e in sub.get_top(limit=100)]
+                        elif sort == "new":
+                            entries = [e for e in sub.get_new(limit=100)]
+
+                        # Get items we already have
+                        c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                        items = [e[0] for e in c.fetchall()]
+
+                        for entry in entries:
+                            if not entry.id in items:
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+
+                                if not feed_id in unsuccessful and not first_run:
+                                    blast_url = shorten_url(entry.url)
+
+                                    if entry.is_self:
+                                        to_blast.append("{} [ {} ]".format(entry.title[:250], blast_url))
+                                    else:
+                                        to_blast.append("{} [ {} ] [ {} ]".format(entry.title[:250], blast_url, entry.short_link))
+
+                        conn.commit()
+
+                        if feed_id in unsuccessful:
+                            unsuccessful.remove(feed_id)
+
+                    except Exception as exc:
+                        print("Reddit error: {} for {}".format(str(exc), feed_name))
+                        unsuccessful.add(feed_id)
+
+
+                elif type_name == "reddit_comments":
+                    c.execute("SELECT article_id FROM feed_reddit_comments WHERE feed_id=?", (feed_id,))
+                    article_id = c.fetchone()[0]
+
+                    try:
+                        r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+                        sub = r.get_submission(submission_id=article_id)
+
+                        entries = [e for e in praw.helpers.flatten_tree(sub.comments)]
+
+                        # Get items we already have
+                        c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                        items = [e[0] for e in c.fetchall()]
+
+                        for entry in entries:
+                            if not entry.id in items:
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+
+                                if not feed_id in unsuccessful and not first_run:
+                                    blast_url = shorten_url(entry.permalink)
+                                    to_blast.append("{} [ {} ]".format(entry.body[:250], blast_url))
+
+                        conn.commit()
+
+                        if feed_id in unsuccessful:
+                            unsuccessful.remove(feed_id)
+
+                    except Exception as exc:
+                        print("Reddit error: {} for {}".format(str(exc), feed_name))
+                        unsuccessful.add(feed_id)
+
+
+                elif type_name == "reddit_search":
+                    c.execute("SELECT subreddit_name, query FROM feed_reddit_search WHERE feed_id=?", (feed_id,))
+                    subreddit, query = c.fetchone()
+
+                    try:
+
+                        r = praw.Reddit("aamnews by /u/andreim at github.com/andreimarcu/aamnews")
+                        entries = [e for e in r.search(query=query, subreddit=subreddit)]
+
+                        # Get items we already have
+                        c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
+                        items = [e[0] for e in c.fetchall()]
+
+                        for entry in entries:
+                            if not entry.id in items:
+                                c.execute("INSERT INTO items (feed_id, unique_id) VALUES (?, ?)", (feed_id, entry.id))
+
+                                if not feed_id in unsuccessful and not first_run:
+                                    blast_url = shorten_url(entry.url)
+
+                                    if entry.is_self:
+                                        to_blast.append("{} [ {} ]".format(entry.title[:250], blast_url))
+                                    else:
+                                        to_blast.append("{} [ {} ] [ {} ]".format(entry.title[:250], blast_url, entry.short_link))
+
+                        conn.commit()
+
+                        if feed_id in unsuccessful:
+                            unsuccessful.remove(feed_id)
+
+                    except Exception as exc:
+                        print("Reddit error: {} for {}".format(str(exc), feed_name))
                         unsuccessful.add(feed_id)
 
 
