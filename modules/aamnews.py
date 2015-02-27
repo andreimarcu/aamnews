@@ -680,9 +680,6 @@ def aamnews_loop(p):
                         if r.ok:
                             f = feedparser.parse(r.text)
 
-                            if feed_id in unsuccessful:
-                                unsuccessful.remove(feed_id)
-
                             # Get items we already have
                             c.execute("SELECT unique_id FROM items WHERE feed_id=?", (feed_id,))
                             items = [e[0] for e in c.fetchall()]
@@ -696,6 +693,9 @@ def aamnews_loop(p):
 
                                         to_blast.append("{} [ {} ]".format(entry.title, blast_url))
                             conn.commit()
+
+                            if feed_id in unsuccessful:
+                                unsuccessful.remove(feed_id)
 
                         else:
                             raise Exception("Status code" + r.status )
