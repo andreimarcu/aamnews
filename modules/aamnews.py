@@ -15,6 +15,13 @@ import tweepy
 import praw
 import re
 
+try:
+    import html.parser
+    unescape = html.parser.HTMLParser().unescape
+except:
+    import html
+    unescape = html.unescape
+
 
 running = False
 
@@ -1106,7 +1113,7 @@ def aamnews_loop(p):
 
                                     if not feed_id in unsuccessful and not first_run:
                                         blast_url = shorten_url(entry.link)
-                                        to_blast.append("{} [ {} ]".format(entry.title[:250], blast_url))
+                                        to_blast.append("{} [ {} ]".format(unescape(entry.title[:250]), blast_url))
 
                             conn.commit()
 
@@ -1256,7 +1263,7 @@ def aamnews_loop(p):
                                 if not feed_id in unsuccessful and not first_run:
                                     blast_url = shorten_url("https://twitter.com/{}/status/{}".format(entry.author.screen_name, entry.id_str))
 
-                                    to_blast.append("{} [ {} ]".format(entry.text[:250], blast_url))
+                                    to_blast.append("{} [ {} ]".format(unescape(entry.text[:250]), blast_url))
 
                         conn.commit()
 
@@ -1291,7 +1298,7 @@ def aamnews_loop(p):
                                 if not feed_id in unsuccessful and not first_run:
                                     blast_url = shorten_url("https://twitter.com/{}/status/{}".format(entry.author.screen_name, entry.id_str))
 
-                                    to_blast.append("{} [ {} ]".format(entry.text[:250], blast_url))
+                                    to_blast.append("{} [ {} ]".format(unescape(entry.text[:250]), blast_url))
 
                         conn.commit()
 
